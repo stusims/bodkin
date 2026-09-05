@@ -59,21 +59,49 @@ reports the revert rather than claiming success.
 ## Stage 2 — Anvil fork
 
 ```sh
-anvil --fork-url https://rpc.mainnet.chain.robinhood.com --chain-id 4663
-# then, in .env
-RPC_URL=http://127.0.0.1:8545
-PRIVATE_KEY=<one of anvil's funded test keys>
+anvil --fork-url https://rpc.mainnet.chain.robinhood.com \
+      --fork-block-number <recent> --chain-id 4663 --hardfork shanghai
+
+node scripts/fork-test.mjs        # signs and sends against the fork; refuses a non-local RPC
 ```
 
-Run the real `--live` paths against forked state: curve buy, curve sell, ERC-20 approve, Permit2 approve, v4 buy,
-v4 sell, claim. This turns all seven send sites from unexecuted into exercised, for nothing.
+`scripts/fork-test.mjs` finds an ETH-paired launch still on its curve, buys, sells, and checks that a
+transaction which must revert is *seen* to revert. Process env beats `.env`, so the script points bodkin at the
+fork without touching your config.
 
-A fork does not receive new launches, so this tests execution, not detection — detection is already proven by
-`hunt`. It also has none of the sequencer's 100 ms blocks or arrival ordering, which is fine: latency is not what
-is being tested here.
+A fork receives no new launches, so this tests execution, not detection — detection is already proven by `hunt`.
+It has none of the sequencer's 100 ms blocks or arrival ordering either, which is fine: latency is not what is
+being tested here.
 
-**Done when** every send site has run to a successful receipt on the fork, and a deliberately bad one (slippage
-set to 0 bps, or selling more than the balance) produces the revert path rather than a crash.
+### What it covers, and what it cannot
+
+Run on 2026-09-05 against a fork at block 55397567:
+
+```
+PASS  curve buy sends and settles              26,078,845 tokens
+PASS  erc-20 approve + curve sell settle       24842071187658107 wei out
+PASS  a reverted buy is detected as reverted   status=reverted, gasUsed=52880
+SKIP  v4 buy / permit2 approve / v4 sell       fork runs pre-Cancun (no TSTORE)
+```
+
+**Three of the seven send sites now execute.** The other four do not, for two separate reasons:
+
+- **The pool paths cannot run on a fork of this chain.** Robinhood Chain is Arbitrum Nitro: its block headers
+  carry `l1BlockNumber`, `sendRoot` and `sendCount`, and no `excessBlobGas`. Anvil derives its EVM spec from
+  those headers and settles on a pre-Cancun one whatever `--hardfork` says — `cancun` and `prague` both give
+  `Excess blob gas not set` or fall back silently. Confirmed with a six-byte probe: `TSTORE` (`0x600160005D00`)
+  and `MCOPY` both return `EVM error NotActivated` while a bare `STOP` runs. Uniswap v4 keeps its lock in
+  transient storage, so nothing v4 can execute here. Those paths stay unproven until Stage 4, with
+  `buy --simulate` against real mainnet state as the interim evidence.
+- **`claim` has nothing to claim.** A fresh anvil account has no accrued fees, so the command correctly stops at
+  its guard and the send path is never reached. Testing it needs state overrides on the escrow, or a real
+  wallet with fees.
+
+Use the official RPC as `--fork-url`, not publicnode: under anvil's fetch pattern publicnode answers 403 and the
+fork dies mid-run.
+
+**Done when** `scripts/fork-test.mjs` reports zero failures — reached, with the four skips above understood
+rather than forgotten.
 
 ## Stage 3 — first real money, the curve
 
