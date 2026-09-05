@@ -108,14 +108,34 @@ rather than forgotten.
 A fresh wallet holding only what you are willing to lose in the session.
 
 ```sh
-bodkin buy  <token> 0.001 --live
-bodkin sell <token> 100   --live
+I_HAVE_READ_THE_PLAN=yes node scripts/first-trade.mjs <token> 0.001
 ```
 
-Record quoted vs actual tokens, gas, and the round-trip loss. This is also the first real check of the
-integer-order curve math against the contract: `tokensOut` should land inside the slippage bound of `quoteBuy`.
+`scripts/first-trade.mjs` does the whole round trip: it simulates the exact buy first and stops if it would
+revert, buys, waits, sells everything back, then prints what the round trip cost. It refuses to run without
+that environment variable, refuses more than 0.005 ETH, refuses a wallet holding more than 0.05 ETH, and
+refuses to buy while the opening tax is above 3% — a first trade should be boring.
 
-**Done when** a buy and a sell both settle, and the numbers match the quotes.
+Every send is now recorded to `data/trades.jsonl`: quote, fill, gas, and the gap between quote and fill.
+That gap is the number to watch.
+
+### What the fork already tells us about it
+
+Running the stage 2 fork against an **old, zero-tax curve** gives:
+
+```
+buy      fill vs quote: 0.0000%
+sell     fill vs quote: 0.0000%
+```
+
+Exact, both directions — the first empirical confirmation that the integer-order port in `pons/curve.ts`
+reproduces the contract rather than merely approximating it.
+
+Against a **fresh launch** the buy fills about 0.19% *better* than quoted, because the opening tax decays
+between the quote and the block the transaction lands in. Expect that on stage 3 too; it is the tax
+decaying in your favour, not a maths error.
+
+**Done when** a buy and a sell both settle and `data/trades.jsonl` shows the fills against their quotes.
 
 ## Stage 4 — first real money, the graduated pool
 
@@ -147,9 +167,11 @@ Defaults, session budget, watched start to finish. Then decide whether to keep g
 
 ## Alongside
 
-- **Trade log.** Record quote, fill, gas and venue as JSON for every live action, so the evidence accumulates
-  instead of being remembered.
-- **CI.** There is none. `typecheck` and `test` only run when someone remembers to run them.
+- **Trade log** — done. Every sent transaction appends a line to `data/trades.jsonl` with the quote, the fill,
+  the gas and the gap between quote and fill. `fillDeltaPct` is computed in bigint, because a 27-digit token
+  amount loses its tail the moment it touches a float.
+- **CI** — done. `.github/workflows/ci.yml` runs typecheck, tests and the build on every push and pull request.
+  The suite needs no network and no key, which is what makes that possible.
 
 ## Not covered by any of this
 

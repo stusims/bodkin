@@ -5,6 +5,7 @@ import { ADDR, ZERO, fastClient, publicClient } from "../chain.js";
 import { quoteSell, readCurveState } from "../pons/curve.js";
 import { buildPermit2Approve } from "./calls.js";
 import { ensureAllowance, sellOnCurve, sendCall, type BuyResult, type SellResult } from "./curveTrade.js";
+import { fillDeltaPct, logTrade } from "./tradeLog.js";
 import { detectRouterLayout, encodeV4Swap, poolKeyFor, ponsPoolKey, quoteV4 } from "./v4.js";
 import { requireAccount } from "./wallet.js";
 
@@ -33,6 +34,7 @@ export async function buyOnPool(token: Address, ethIn: bigint, slippageBps: numb
   const tokensOut = transfers
     .filter((t) => t.address.toLowerCase() === token.toLowerCase() && t.args.to.toLowerCase() === me)
     .reduce((a, t) => a + t.args.value, 0n);
+  logTrade({ at: Math.floor(Date.now() / 1000), action: "buy", venue: "pool", token, hash, ethIn: ethIn.toString(), tokensQuoted: quoted.toString(), minOut: minOut.toString(), tokensOut: tokensOut.toString(), gasUsed: rc.gasUsed.toString(), fillDeltaPct: fillDeltaPct(quoted, tokensOut) });
   return { ...base, tokensOut, hash, gasUsed: rc.gasUsed };
 }
 
@@ -57,7 +59,9 @@ export async function sellOnPool(token: Address, tokensIn: bigint, slippageBps: 
   if (rc.status !== "success") throw new Error(`pool sell reverted: ${hash}`);
   const balAfter = await publicClient.getBalance({ address: me });
   const gasCost = rc.gasUsed * (rc.effectiveGasPrice ?? 0n);
-  return { ...base, ethOut: balAfter - balBefore + gasCost, hash, gasUsed: rc.gasUsed };
+  const ethOut = balAfter - balBefore + gasCost;
+  logTrade({ at: Math.floor(Date.now() / 1000), action: "sell", venue: "pool", token, hash, tokensIn: tokensIn.toString(), ethQuoted: quoted.toString(), minOut: minOut.toString(), ethOut: ethOut.toString(), gasUsed: rc.gasUsed.toString(), fillDeltaPct: fillDeltaPct(quoted, ethOut) });
+  return { ...base, ethOut, hash, gasUsed: rc.gasUsed };
 }
 
 /** Route a sell by graduation phase: curve while trading, pool after graduation, refuse while swept. */
