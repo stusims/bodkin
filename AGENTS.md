@@ -139,9 +139,18 @@ regression.
 - **The four walls around a live session stay intact**: the typed `arm`
   confirmation, the per-buy size, the position cap, and the session budget.
   Do not weaken or bypass any of them, or add a flag that skips one.
-- **The board binds 127.0.0.1 only** and exposes exactly four verbs (pause,
-  resume, close a position, edit a bounded rule). No route may initiate a
-  buy.
+- **The board binds 127.0.0.1 only.** Four verbs reach the engine (pause,
+  resume, close a position, edit a bounded rule) and no route may make the
+  *engine* buy.
+- **The wallet path never holds a key and never broadcasts.** With
+  `--wallet`, `/api/tx/{buy,sell,claim}` may only *build* unsigned
+  `{to, data, value}` for a browser wallet to sign. Do not sign there, do not
+  send there, do not read `PRIVATE_KEY` there, and do not let the engine use
+  it. Keep it behind the flag (off by default), keep the per-buy cap enforced
+  server-side before a transaction is built, and keep refusing cross-origin
+  POSTs. This was a deliberate change to the model on 2026-09-05: the board
+  can now put a transaction in front of a person, and only a person can sign
+  it.
 - **Curve math follows the protocol's integer order.** `src/pons/curve.ts`
   reproduces `PonsV2BondingCurve.buy/sell` step by step so `minTokensOut`
   matches the contract's rounding. Do not "simplify" it to floating point or

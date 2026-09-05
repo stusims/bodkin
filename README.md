@@ -137,7 +137,9 @@ The engine and a page to watch it. **It opens as a feed**: launches arrive, get 
 **start demo** (dry run) or, with `--live`, **arm live sniping**. Click a launch for the whole read: links to pons, the explorer, Axiom and
 FOMO, description, every rule that refused it, every scoring line. **close now** sells a position at the current quote. Five rules have
 steppers and change the running engine. A pulse every ten seconds tells a quiet chain from a dead engine. `p` start/stop, `f` fire filter,
-`/` search, `esc` close. It binds loopback, it cannot buy on demand, and `--live` is a launch flag, not a button. The rest, and two things
+`/` search, `esc` close. It binds loopback, nothing on it can make the engine buy, and `--live` is a launch flag, not a button.
+With `--wallet` the page can also build a buy, sell or claim for a browser wallet to sign, which keeps a key off the machine entirely;
+bodkin never holds one on that path and the sniper still needs its own. The rest, and two things
 hidden in the page: [docs/BOARD.md](./docs/BOARD.md).
 
 <p align="center"><img src="./assets/board-drawer.png" alt="the drawer: contract, links, decision, dev buy, fee recipient, exempt wallets, deployer, curve, every scoring line" width="100%"></p>

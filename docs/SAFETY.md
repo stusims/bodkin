@@ -40,8 +40,17 @@ Start with a fresh wallet holding the budget and nothing else. Raise the numbers
 ## What the board can and cannot do
 
 It listens on 127.0.0.1 only. It can pause and resume firing, close an open position at the current quote, and change five numeric rules
-inside fixed bounds. It cannot buy on demand and cannot switch a dry run to live: `--live` is decided when you start it. Anyone on your
-machine can open it; nobody outside can. If several people share the machine, start it with a different `--port` and assume they can click.
+inside fixed bounds. It cannot make the engine buy and cannot switch a dry run to live: `--live` is decided when you start it.
+
+With `--wallet` the page gains one more power, and it is worth being exact about what it is. The page can ask bodkin to *build* a
+buy, sell or claim and hand it to a browser wallet. Bodkin holds no key on that path and cannot broadcast; your wallet shows the
+transaction and you sign it or you do not. Nothing can spend without that click, the per-buy cap (`--max-buy`, 0.01 ETH by
+default) is enforced before the transaction is built, and cross-origin POSTs are refused so another page in your browser cannot
+drive the board. It is off unless you pass the flag.
+
+Anyone on your machine can open the board; nobody outside can. If several people share the machine, start it with a different `--port`
+and assume they can click — and with `--wallet` on, assume they can also raise a signing prompt in your wallet. The prompt is still
+yours to refuse, but do not leave a connected wallet in front of a machine you share.
 
 ## Fees and taxes you pay on every trade
 
