@@ -5,7 +5,8 @@ export async function retry<T>(fn: () => Promise<T>, tries = 3, baseMs = 400): P
     try { return await fn(); } catch (e) {
       last = e;
       const msg = (e as Error).message ?? "";
-      const transient = /unknown RPC error|429|rate|timeout|ECONNRESET|fetch failed|503|502/i.test(msg);
+      // "timed out" is spelled that way by the logs endpoint, and does not match /timeout/.
+      const transient = /unknown RPC error|429|rate|timed out|timeout|ECONNRESET|fetch failed|503|502/i.test(msg);
       if (!transient || i === tries - 1) throw e;
       await new Promise((r) => setTimeout(r, baseMs * 2 ** i));
     }

@@ -70,6 +70,19 @@ function candidates(method: string): Endpoint[] {
 
 let nextId = 1;
 
+/**
+ * A JSON-RPC error the endpoint would likely answer on another try.
+ *
+ * The logs endpoint reports its own server-side timeout on a wide eth_getLogs range as an
+ * *invalid params* error (`-32602`, "log query timed out"), which reads like a client mistake
+ * and is not one: the same query succeeds on the next attempt. Classifying it by message rather
+ * than by code is what lets `dev` and the deployer index retry instead of failing the command.
+ */
+export function isTransientRpcError(err: { code?: number; message?: string }): boolean {
+  if (err.code === 429) return true;
+  return /timed out|timeout/i.test(err.message ?? "");
+}
+
 export function gatedHttp(opts: { timeoutMs?: number; headers?: Record<string, string>; retries?: number } = {}): Transport {
   const timeoutMs = opts.timeoutMs ?? 20_000;
   const retries = opts.retries ?? 6;
@@ -116,6 +129,9 @@ export function gatedHttp(opts: { timeoutMs?: number; headers?: Record<string, s
       try { json = JSON.parse(text); } catch { lastErr = `${ep.label}: HTTP ${res.status}, non-JSON body ${text.slice(0, 60)}`; ep.badUntil = Date.now() + 5_000; await sleep(300); continue; }
       if (json.error) {
         if (json.error.code === 429) { throttled++; cooldownUntil = Date.now() + 3_000; ep.badUntil = Date.now() + 4_000; lastErr = `${ep.label}: 429`; await sleep(list.length > 1 ? 100 : Math.min(15_000, 400 * 2 ** attempt)); continue; }
+        // A server-side timeout on a heavy eth_getLogs. Bench this endpoint and try the next one, but
+        // do not start a process-wide cooldown: one slow log range is not the throttle signal a 429 is.
+        if (isTransientRpcError(json.error)) { ep.badUntil = Date.now() + 4_000; lastErr = `${ep.label}: ${json.error.message}`; await sleep(list.length > 1 ? 100 : Math.min(15_000, 400 * 2 ** attempt)); continue; }
         // viem expects the JSON-RPC error object so it can map reverts and known codes.
         throw Object.assign(new Error(json.error.message), { code: json.error.code, data: json.error.data });
       }
