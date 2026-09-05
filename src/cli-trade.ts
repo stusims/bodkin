@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import { getAddress, isAddress, parseEther, type Address } from "viem";
 import { factoryAbi } from "./abi/pons.js";
 import { ADDR, publicClient } from "./chain.js";
+import type { TxCall } from "./trade/calls.js";
 import { banner } from "./util/banner.js";
 import { eth, iso, pad, usd } from "./util/fmt.js";
 import { c, log } from "./util/log.js";
@@ -13,6 +14,57 @@ const addr = (s: string): Address => {
   if (!isAddress(s)) throw new Error(`not an address: ${s}`);
   return getAddress(s);
 };
+
+/**
+ * Run one built call through eth_call and say what happened. Exits non-zero on a revert so `--simulate`
+ * is usable as a gate in a script. Simulates as the configured signer when there is one, which is the
+ * honest test: real balance, real allowances.
+ */
+async function reportSimulation(label: string, call: TxCall, signer: Address | null): Promise<void> {
+  const { simulateAsSigner } = await import("./trade/simulate.js");
+  const res = await simulateAsSigner(call, signer);
+  const who = signer ? `as ${signer}` : `as a funded probe ${c.muted("(no PRIVATE_KEY; balances and allowances are invented)")}`;
+  if (res.ok) {
+    console.log(`${c.neon("simulate ok")}  ${label} ${who}  ${c.muted(`${call.data.length / 2 - 1} bytes to ${call.to}`)}`);
+    return;
+  }
+  console.log(`${c.loss("simulate reverted")}  ${label} ${who}\n  ${res.reason ?? "no reason given"}`);
+  process.exitCode = 1;
+}
+
+/**
+ * Build the buy the live path would build -- same quote, same slippage bound, same venue -- and simulate it.
+ * This is the part a dry run never reaches: `buyOnCurve` and `buyOnPool` both return before any calldata exists.
+ */
+async function simulateBuy(token: Address, curve: Address, phase: number, ethIn: bigint, slippageBps: number): Promise<void> {
+  const { getAccount } = await import("./trade/wallet.js");
+  const { PROBE } = await import("./trade/simulate.js");
+  const { buildCurveBuy } = await import("./trade/calls.js");
+  const { minOutFromRate, quoteBuy, readCurveState } = await import("./pons/curve.js");
+  const signer = getAccount()?.address ?? null;
+  const recipient = signer ?? PROBE;
+
+  if (phase === 0) {
+    const state = await readCurveState(curve, recipient);
+    const q = quoteBuy(state, ethIn);
+    const minOut = minOutFromRate(q.tokensOut, slippageBps);
+    console.log(`curve buy ${eth(ethIn)} ETH → ${fmtTokens(q.tokensOut)} tokens (min ${fmtTokens(minOut)}), opening tax ${Number(state.openingTaxBps) / 100}%`);
+    await reportSimulation("curve buy", buildCurveBuy(curve, ethIn, minOut, recipient), signer);
+    return;
+  }
+
+  const { detectRouterLayout, encodeV4Swap, poolKeyFor, quoteV4 } = await import("./trade/v4.js");
+  const { key, pairToken, phase: p } = await poolKeyFor(token);
+  if (p !== 2) { log.error(`token is in phase ${p}, no pool to simulate against`); process.exit(1); }
+  if (pairToken !== ADDR.weth && pairToken !== "0x0000000000000000000000000000000000000000") {
+    log.error(`pool is paired with ${pairToken}, not ETH; v0.1 trades ETH pairs only`); process.exit(1);
+  }
+  const quoted = await quoteV4(key, true, ethIn);
+  const minOut = (quoted * (10_000n - BigInt(slippageBps))) / 10_000n;
+  const layout = await detectRouterLayout(key);
+  console.log(`pool buy ${eth(ethIn)} ETH → ${fmtTokens(quoted)} tokens (min ${fmtTokens(minOut)}), router layout ${layout}`);
+  await reportSimulation("v4 buy", encodeV4Swap(key, true, ethIn, minOut, layout), signer);
+}
 
 interface SnipeCli { live?: boolean; eth?: string; minScore?: string; maxTaxBps?: string; keyword?: string; deployer?: string[]; maxOpen?: string; for?: string; slippage?: string; allowPairs?: boolean; budget?: string; yes?: boolean }
 
@@ -107,8 +159,11 @@ export function registerTradeCommands(program: Command): void {
     .command("claim")
     .description("claim your creator fees from the pons escrow (the creator wallet of your own launches)")
     .option("--live", "sign and send (default: show what would be claimed)")
-    .action(async (o: { live?: boolean }) => {
-      const { requireAccount, walletClient } = await import("./trade/wallet.js");
+    .option("--simulate", "eth_call the claim against current state and report success or the revert reason; sends nothing")
+    .action(async (o: { live?: boolean; simulate?: boolean }) => {
+      const { requireAccount } = await import("./trade/wallet.js");
+      const { sendCall } = await import("./trade/curveTrade.js");
+      const { buildEscrowClaim } = await import("./trade/calls.js");
       const { escrowAbi } = await import("./abi/pons.js");
       const { parseEventLogs } = await import("viem");
       const acct = requireAccount();
@@ -116,8 +171,9 @@ export function registerTradeCommands(program: Command): void {
       const pending = await publicClient.readContract({ address: ADDR.ponsEscrow, abi: escrowAbi, functionName: "balanceOf", args: [acct.address] });
       if (pending === 0n) { console.log(c.muted(`nothing to claim for ${acct.address}`)); return; }
       console.log(`${o.live ? "claiming" : "dry run: would claim"} ${c.neon(eth(pending) + " ETH")} ${c.muted(usd(price === null ? null : (Number(pending) / 1e18) * price))} for ${acct.address}`);
+      if (o.simulate) { await reportSimulation("claim", buildEscrowClaim(), acct.address); return; }
       if (!o.live) return;
-      const hash = await walletClient().writeContract({ address: ADDR.ponsEscrow, abi: escrowAbi, functionName: "claim" });
+      const hash = await sendCall(buildEscrowClaim());
       const rc = await publicClient.waitForTransactionReceipt({ hash });
       if (rc.status !== "success") { log.error(`claim reverted: ${hash}`); process.exit(1); }
       const got = parseEventLogs({ abi: escrowAbi, logs: rc.logs, eventName: "Claimed" }).reduce((a, l) => a + l.args.amount, 0n);
@@ -128,14 +184,16 @@ export function registerTradeCommands(program: Command): void {
     .command("buy <token> <eth>")
     .description("buy a pons v2 token with ETH: on the curve before graduation, on the v4 pool after")
     .option("--live", "sign and send (default: dry run)")
+    .option("--simulate", "eth_call the real buy against current state and report success or the revert reason; sends nothing")
     .option("--slippage <bps>", "slippage in bps", "300")
-    .action(async (tokenArg: string, ethArg: string, o: { live?: boolean; slippage: string }) => {
+    .action(async (tokenArg: string, ethArg: string, o: { live?: boolean; simulate?: boolean; slippage: string }) => {
       const token = addr(tokenArg);
       const { buyOnCurve } = await import("./trade/curveTrade.js");
       const { buyOnPool } = await import("./trade/poolTrade.js");
       const rec = await publicClient.readContract({ address: ADDR.ponsFactory, abi: factoryAbi, functionName: "getLaunchedToken", args: [token] });
       if (!rec.exists) { log.error("not a pons v2 token"); process.exit(1); }
       const amount = parseEther(ethArg);
+      if (o.simulate) { await simulateBuy(token, rec.curve, rec.phase, amount, Number(o.slippage)); return; }
       const res = rec.phase === 0 ? await buyOnCurve(rec.curve, amount, Number(o.slippage), !o.live) : await buyOnPool(token, amount, Number(o.slippage), !o.live);
       console.log(`${o.live ? "bought" : "dry run:"} ${eth(res.ethIn)} ETH → ${fmtTokens(res.tokensOut ?? res.tokensQuoted)} tokens on the ${res.venue} (min ${fmtTokens(res.minOut)})${res.hash ? "  " + res.hash : ""}`);
     });
