@@ -3,14 +3,12 @@ import { factoryAbi, tokenAbi, BPS } from "../abi/pons.js";
 import { erc20Abi, permit2Abi } from "../abi/uniswap.js";
 import { ADDR, ZERO, fastClient, publicClient } from "../chain.js";
 import { quoteSell, readCurveState } from "../pons/curve.js";
-import { ensureAllowance, sellOnCurve, type BuyResult, type SellResult } from "./curveTrade.js";
+import { buildPermit2Approve } from "./calls.js";
+import { ensureAllowance, sellOnCurve, sendCall, type BuyResult, type SellResult } from "./curveTrade.js";
 import { detectRouterLayout, encodeV4Swap, poolKeyFor, ponsPoolKey, quoteV4 } from "./v4.js";
-import { requireAccount, walletClient } from "./wallet.js";
+import { requireAccount } from "./wallet.js";
 
 /** Post-graduation venue: the Uniswap v4 pool behind the pons hook, reached through the UniversalRouter. */
-
-const MAX_UINT160 = (1n << 160n) - 1n;
-const MAX_UINT48 = Number((1n << 48n) - 1n);
 
 /** v0.1 trades pools in native ETH only; a USDG- or stock-paired pool needs the pair asset, not ETH. */
 async function ethPoolKey(token: Address) {
@@ -27,8 +25,7 @@ export async function buyOnPool(token: Address, ethIn: bigint, slippageBps: numb
   const base: BuyResult = { dryRun, venue: "pool", ethIn, tokensQuoted: quoted, minOut };
   if (dryRun) return base;
   const layout = await detectRouterLayout(key);
-  const call = encodeV4Swap(key, true, ethIn, minOut, layout);
-  const hash = await walletClient().sendTransaction({ to: call.to, data: call.data, value: call.value });
+  const hash = await sendCall(encodeV4Swap(key, true, ethIn, minOut, layout));
   const rc = await publicClient.waitForTransactionReceipt({ hash });
   if (rc.status !== "success") throw new Error(`pool buy reverted: ${hash}`);
   const me = requireAccount().address.toLowerCase();
@@ -50,13 +47,12 @@ export async function sellOnPool(token: Address, tokensIn: bigint, slippageBps: 
   await ensureAllowance(token, ADDR.permit2, tokensIn);
   const [p2amount, p2exp] = await publicClient.readContract({ address: ADDR.permit2, abi: permit2Abi, functionName: "allowance", args: [me, token, ADDR.universalRouter] });
   if (p2amount < tokensIn || p2exp < Math.floor(Date.now() / 1000) + 600) {
-    const h = await walletClient().writeContract({ address: ADDR.permit2, abi: permit2Abi, functionName: "approve", args: [token, ADDR.universalRouter, MAX_UINT160, MAX_UINT48] });
+    const h = await sendCall(buildPermit2Approve(token));
     await publicClient.waitForTransactionReceipt({ hash: h });
   }
   const layout = await detectRouterLayout(key);
-  const call = encodeV4Swap(key, false, tokensIn, minOut, layout);
   const balBefore = await publicClient.getBalance({ address: me });
-  const hash = await walletClient().sendTransaction({ to: call.to, data: call.data, value: call.value });
+  const hash = await sendCall(encodeV4Swap(key, false, tokensIn, minOut, layout));
   const rc = await publicClient.waitForTransactionReceipt({ hash });
   if (rc.status !== "success") throw new Error(`pool sell reverted: ${hash}`);
   const balAfter = await publicClient.getBalance({ address: me });

@@ -2,7 +2,13 @@ import { parseEventLogs, type Address, type Hex } from "viem";
 import { curveAbi, tokenAbi } from "../abi/pons.js";
 import { ZERO, fastClient, publicClient } from "../chain.js";
 import { minOutFromRate, quoteBuy, quoteSell, readCurveState, type CurveState } from "../pons/curve.js";
+import { buildCurveBuy, buildCurveSell, buildErc20Approve, type TxCall } from "./calls.js";
 import { requireAccount, walletClient } from "./wallet.js";
+
+/** The one place a built call is signed and broadcast. Everything above it only encodes. */
+export async function sendCall(call: TxCall): Promise<Hex> {
+  return walletClient().sendTransaction({ to: call.to, data: call.data, value: call.value });
+}
 
 /**
  * Pre-graduation venue: the bonding curve itself. Quote first, then either report (dry run) or sign and send.
@@ -19,7 +25,7 @@ export async function buyOnCurve(curve: Address, ethIn: bigint, slippageBps: num
   const minOut = minOutFromRate(q.tokensOut, slippageBps);
   const base: BuyResult = { dryRun, venue: "curve", ethIn, tokensQuoted: q.tokensOut, minOut };
   if (dryRun) return base;
-  const hash = await walletClient().writeContract({ address: curve, abi: curveAbi, functionName: "buy", args: [ethIn, minOut, recipient], value: ethIn });
+  const hash = await sendCall(buildCurveBuy(curve, ethIn, minOut, recipient));
   const rc = await publicClient.waitForTransactionReceipt({ hash });
   if (rc.status !== "success") throw new Error(`buy reverted: ${hash}`);
   const buys = parseEventLogs({ abi: curveAbi, logs: rc.logs, eventName: "CurveBuy" });
@@ -30,7 +36,7 @@ export async function ensureAllowance(token: Address, spender: Address, amount: 
   const owner = requireAccount().address;
   const current = await publicClient.readContract({ address: token, abi: tokenAbi, functionName: "allowance", args: [owner, spender] });
   if (current >= amount) return null;
-  const hash = await walletClient().writeContract({ address: token, abi: tokenAbi, functionName: "approve", args: [spender, (1n << 256n) - 1n] });
+  const hash = await sendCall(buildErc20Approve(token, spender));
   await publicClient.waitForTransactionReceipt({ hash });
   return hash;
 }
@@ -43,7 +49,7 @@ export async function sellOnCurve(curve: Address, token: Address, tokensIn: bigi
   const base: SellResult = { dryRun, venue: "curve", tokensIn, ethQuoted, minOut };
   if (dryRun) return base;
   await ensureAllowance(token, curve, tokensIn);
-  const hash = await walletClient().writeContract({ address: curve, abi: curveAbi, functionName: "sell", args: [tokensIn, minOut, requireAccount().address] });
+  const hash = await sendCall(buildCurveSell(curve, tokensIn, minOut, requireAccount().address));
   const rc = await publicClient.waitForTransactionReceipt({ hash });
   if (rc.status !== "success") throw new Error(`sell reverted: ${hash}`);
   const sells = parseEventLogs({ abi: curveAbi, logs: rc.logs, eventName: "CurveSell" });
