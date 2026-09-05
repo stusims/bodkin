@@ -64,9 +64,32 @@ All on `127.0.0.1` only.
 | POST | `/api/start`, `/api/stop` | firing on / off (`/api/resume` and `/api/pause` are the same verbs) |
 | POST | `/api/close/<positionId>` | sell a position now |
 | POST | `/api/rules` | body `{"minScore": 70}` etc.; only the five editable rules, clamped to their bounds |
+| POST | `/api/tx/buy` | **`--wallet` only.** body `{from, token, eth, slippageBps?}` → an unsigned plan; sends nothing |
+| POST | `/api/tx/sell` | **`--wallet` only.** body `{from, token, pct, slippageBps?}` → a plan, approvals first if needed |
+| POST | `/api/tx/claim` | **`--wallet` only.** body `{from}` → an unsigned escrow claim |
 
-There is no route that buys on demand. Buying is the engine's decision under the rules on screen, and `--live` is a launch flag, not a
-button, so a page left open cannot be turned into a trading surface by anything on it.
+No route makes the engine buy. Firing is the engine's decision under the rules on screen, and `--live` is a launch flag, not a
+button, so a page left open cannot be turned into a sniper by anything on it.
+
+Cross-origin POSTs are refused on every route, so another page in your browser cannot drive the board.
+
+## Trading it yourself, with a wallet
+
+```
+bodkin board --wallet --max-buy 0.02
+```
+
+The page gains a **connect wallet** button and, in the drawer of any launch, a buy amount with **buy**, **sell all** and **sell half**.
+It finds your wallet through EIP-6963 (falling back to `window.ethereum`), puts it on chain 4663 — Phantom ships Robinhood Chain, others
+may need `wallet_addEthereumChain` — and then, for each action, asks bodkin what to send.
+
+Bodkin answers with a **plan**: an ordered list of unsigned steps, each `{label, to, data, value}`. A curve buy is one step; a pool sell
+can be three, because the router pulls tokens through Permit2 and both approvals may be missing. Your wallet shows each one and you sign
+or refuse; a refusal stops the run where it is rather than carrying on.
+
+What this does *not* change: bodkin holds no key on this path, cannot broadcast, and the automated sniper is untouched — it still needs
+`PRIVATE_KEY` in `.env`, because it fires 1.6–2.1 s after detection and cannot wait for anyone to click. `--max-buy` caps one buy from
+the page and is enforced before the transaction is built. The whole thing is off unless you pass `--wallet`.
 
 ## Two things hidden in the page
 

@@ -8,16 +8,23 @@ import { loadPositions } from "../trade/positions.js";
 import { links } from "../util/links.js";
 import { ethUsd } from "../util/price.js";
 import { gateStats } from "../util/rpcGate.js";
+import { robinhood } from "../chain.js";
 import { c } from "../util/log.js";
+import { parseBuyAmount, planBuy, planClaim, planSell, requireAddress, type WalletCaps } from "./walletTx.js";
 
 /**
  * The board. Binds 127.0.0.1 only. GET serves the page, the event stream and a state snapshot; POST reaches
  * exactly four verbs on the in-process engine: start (resume), stop (pause), close a position, and edit a numeric
- * rule. The engine starts stopped: the page is a live feed until someone presses start. Nothing here can buy on
- * demand; firing is the engine's decision under the rules on screen, and `--live` is a launch flag, not a button.
+ * rule. The engine starts stopped: the page is a live feed until someone presses start. The engine cannot be made
+ * to buy on demand; firing is its decision under the rules on screen, and `--live` is a launch flag, not a button.
+ *
+ * With `--wallet`, and only then, three more routes appear under /api/tx. They *build* transactions and return
+ * them unsigned; a browser wallet shows each one and the person signs or refuses. The server holds no key on this
+ * path and cannot broadcast, so the engine's own limits are untouched: /api/tx never reaches the engine, and a
+ * wallet buy is a person deciding, not the sniper firing.
  */
 
-export interface BoardOpts { port: number; live: boolean; rules: SnipeRules }
+export interface BoardOpts { port: number; live: boolean; rules: SnipeRules; wallet?: boolean; maxBuyWei?: bigint }
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -46,6 +53,7 @@ const json = (res: ServerResponse, status: number, body: unknown) => { res.write
 
 export async function startBoard(opts: BoardOpts): Promise<void> {
   const html = readFileSync(join(here, "index.html"), "utf8");
+  const caps: WalletCaps = { maxBuyWei: opts.maxBuyWei ?? 10n ** 16n };
   const clients = new Set<ServerResponse>();
   const recent: Record<string, unknown>[] = [];
   const startedAt = Date.now();
@@ -81,7 +89,7 @@ export async function startBoard(opts: BoardOpts): Promise<void> {
     const f = feedHealth();
     return { feed: f, lastLaunchAgeSec: f.lastLaunchAt ? Math.round((Date.now() - f.lastLaunchAt) / 1000) : null, gate: gateStats(), spentWei: engine.spent().toString() };
   };
-  const hello = () => ({ kind: "hello", live: opts.live, paused: engine.paused(), rules: rulesView(), startedAt, seen, fired, positions: positionsView(), refs: { axiom: links.axiomRef(), fomo: links.fomoRef() }, health: health() });
+  const hello = () => ({ kind: "hello", live: opts.live, paused: engine.paused(), rules: rulesView(), startedAt, seen, fired, positions: positionsView(), refs: { axiom: links.axiomRef(), fomo: links.fomoRef() }, health: health(), wallet: { enabled: !!opts.wallet, chainId: robinhood.id, maxBuyEth: Number(caps.maxBuyWei) / 1e18 } });
 
   // A pulse every 10 s so the page can tell "quiet chain" from "dead engine".
   const pulse = setInterval(() => push({ kind: "tick", t: Date.now(), paused: engine.paused(), health: health() }), 10_000);
@@ -104,6 +112,32 @@ export async function startBoard(opts: BoardOpts): Promise<void> {
         return;
       }
       if (req.method === "POST") {
+        // A page on another origin can POST here without reading the reply; refuse anything not served by us.
+        // Requests with no Origin (curl, scripts on this machine) are left alone -- the loopback bind is their limit.
+        const origin = req.headers.origin;
+        if (origin && origin !== `http://127.0.0.1:${opts.port}` && origin !== `http://localhost:${opts.port}`) {
+          json(res, 403, { error: `refusing a cross-origin POST from ${origin}` });
+          return;
+        }
+        if (url.pathname.startsWith("/api/tx/")) {
+          if (!opts.wallet) { json(res, 404, { error: "wallet routes are off; start the board with --wallet" }); return; }
+          const body = JSON.parse((await readBody(req)) || "{}") as Record<string, unknown>;
+          const from = requireAddress(body.from, "from");
+          const slippage = Number.isFinite(Number(body.slippageBps)) ? Math.max(0, Math.min(5000, Number(body.slippageBps))) : 300;
+          const what = url.pathname.slice("/api/tx/".length);
+          if (what === "buy") {
+            const plan = await planBuy(from, requireAddress(body.token, "token"), parseBuyAmount(body.eth, caps), slippage);
+            json(res, 200, plan);
+            return;
+          }
+          if (what === "sell") {
+            json(res, 200, await planSell(from, requireAddress(body.token, "token"), Number(body.pct ?? 100), slippage));
+            return;
+          }
+          if (what === "claim") { json(res, 200, planClaim(from)); return; }
+          json(res, 404, { error: "no such tx route" });
+          return;
+        }
         if (url.pathname === "/api/start" || url.pathname === "/api/resume") { engine.resume(); json(res, 200, { paused: false }); return; }
         if (url.pathname === "/api/stop" || url.pathname === "/api/pause") { engine.pause(); json(res, 200, { paused: true }); return; }
         if (url.pathname.startsWith("/api/close/")) {

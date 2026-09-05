@@ -248,11 +248,15 @@ export function registerTradeCommands(program: Command): void {
     .option("--allow-pairs", "also fire on non-ETH pairs")
     .option("--budget <eth>", "stop firing after this much ETH has been spent this session (default SNIPE_BUDGET_ETH)")
     .option("--yes", "skip the live confirmation prompt (scripts)")
-    .action(async (o: SnipeCli & { port: string }) => {
+    .option("--wallet", "let the page build buys, sells and claims for a browser wallet to sign; bodkin never holds the key")
+    .option("--max-buy <eth>", "cap on one wallet buy from the page", "0.01")
+    .action(async (o: SnipeCli & { port: string; wallet?: boolean; maxBuy: string }) => {
       const { startBoard } = await import("./board/server.js");
       const rules = await snipeRules(o);
       banner();
       if (o.live) await armLive(rules, o.yes);
-      await startBoard({ port: Number(o.port), live: !!o.live, rules });
+      const maxBuyWei = parseEther(o.maxBuy);
+      if (o.wallet) console.log(`${c.neon("wallet")} the page can build transactions for a browser wallet to sign · cap ${eth(maxBuyWei)} ETH per buy · bodkin never holds your key`);
+      await startBoard({ port: Number(o.port), live: !!o.live, rules, wallet: !!o.wallet, maxBuyWei });
     });
 }

@@ -63,6 +63,7 @@ graduations in the index window; the curve bar, real quote in, FDV, and the open
 
 ```
 bodkin board [--port <n>] [--live] [--eth <n>] [--min-score <n>] [--keyword <regex>] [--allow-pairs]
+             [--wallet] [--max-buy <eth>]
 ```
 
 Starts the same engine as `snipe` and serves `http://127.0.0.1:4663` (or `BOARD_PORT`). **The engine starts stopped**: the page is a live
@@ -71,6 +72,13 @@ Everything on the page is described in [BOARD.md](./BOARD.md): launches with a s
 launch with links to pons, the explorer, Axiom and FOMO and every scoring line, positions with live marks and a **close now** button, rules
 with steppers that change the running engine, a pulse that tells a quiet chain from a dead engine, filters, search, keyboard shortcuts,
 sound on fire. Takes the same `--budget` and `--yes` flags as `snipe`.
+
+`--wallet` adds a **connect wallet** button and, in each launch's drawer, a buy amount with **buy**, **sell all** and **sell half**. The
+page asks bodkin to *build* the transaction and hands it to your browser wallet, which shows it and waits for you to sign; bodkin holds
+no key on that path and cannot broadcast. `--max-buy <eth>` caps one buy from the page (default `0.01`) and is enforced before the
+transaction is built. A pool sell can take three signatures, because the router pulls tokens through Permit2 and both approvals may be
+missing; refusing any step stops the run there. Off unless you pass the flag, and unrelated to `--live`, which governs only the engine —
+the sniper still needs `PRIVATE_KEY` because it cannot wait for a click.
 
 ## snipe
 

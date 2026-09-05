@@ -69,7 +69,11 @@ flowchart LR
   the pons hook, keyed by the pair token and tick spacing the factory recorded for that launch. `sellAnywhere` reads the phase from the factory
   and refuses to trade during the swept gap between the two.
 - **The board is a view with four verbs.** It binds 127.0.0.1, streams engine events, and accepts pause, resume, close a position, and edit
-  a bounded rule. It has no route that buys; `--live` is a launch flag.
+  a bounded rule. No route makes the *engine* buy; `--live` is a launch flag.
+- **`--wallet` adds three build-only routes.** With that flag, and only then, `/api/tx/{buy,sell,claim}` return unsigned
+  `{to, data, value}` for a browser wallet to sign. The server holds no key on this path and cannot broadcast: the person's
+  wallet shows each transaction and they sign or refuse. It is a second, human-driven venue beside the engine, not a way to
+  make the engine fire, and the automated sniper still needs its own key because it cannot wait for a click.
 
 ## What is deliberately not here
 

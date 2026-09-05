@@ -164,6 +164,7 @@
     <span id="mode" class="pill"><span class="dot"></span><span id="mode-text">connecting</span></span>
     <button class="btn" id="run" title="p">start demo</button>
     <button class="btn ghost" id="sound" title="beep on fire">sound off</button>
+    <button class="btn ghost" id="wallet-btn" title="connect a browser wallet; bodkin never sees your key" hidden>connect wallet</button>
     <span class="clock" id="clock"></span>
   </div>
 </header>
@@ -217,7 +218,7 @@
 <script>
   const $ = (id) => document.getElementById(id);
   const feed = $("feed"), positions = $("positions"), drawer = $("drawer");
-  const state = { seen: 0, fired: 0, startedAt: Date.now(), pnl: 0n, live: false, paused: true, pos: new Map(), rows: new Map(), filter: "all", q: "", sound: false, sel: null, rules: null, tempo: [], refs: {}, health: null, lastTick: Date.now(), connected: false };
+  const state = { seen: 0, fired: 0, startedAt: Date.now(), pnl: 0n, live: false, paused: true, pos: new Map(), rows: new Map(), filter: "all", q: "", sound: false, sel: null, rules: null, tempo: [], refs: {}, health: null, lastTick: Date.now(), connected: false, wallet: { enabled: false, chainId: 4663, maxBuyEth: 0.01, provider: null, account: null } };
   const fmtEth = (wei) => (Number(BigInt(wei)) / 1e18).toFixed(4);
   const hhmm = (t) => new Date(t).toISOString().slice(11, 19);
   const short = (a) => a ? a.slice(0, 6) + "…" + a.slice(-4) : "?";
@@ -362,7 +363,8 @@
         <dt>read in</dt><dd>${e.readMs ?? "?"} ms · block ${d.block ?? "?"}</dd>
         ${d.errors?.length ? `<dt>errors</dt><dd class="loss">${esc(d.errors.join("; "))}</dd>` : ""}
       </dl>
-      <ul class="reasons">${reasons}</ul>`;
+      <ul class="reasons">${reasons}</ul>
+      ${walletPanel(e.token)}`;
     drawer.classList.add("open");
   }
   function renderRefs() { const r = state.refs || {}; const a = []; if (r.axiom) a.push(`<a href="${esc(r.axiom)}" target="_blank" rel="noopener">axiom</a>`); if (r.fomo) a.push(`<a href="${esc(r.fomo)}" target="_blank" rel="noopener">fomo</a>`); $("foot-refs").innerHTML = a.length ? ` · sign up: ${a.join(" · ")}` : ""; }
@@ -370,6 +372,8 @@
   $("drawer-close").onclick = closeDrawer;
   drawer.addEventListener("click", (ev) => {
     const c = ev.target.closest("[data-copy]"); if (c) { copy(c.dataset.copy); return; }
+    const b = ev.target.closest("[data-wbuy]"); if (b) { walletBuy(b.dataset.wbuy); return; }
+    const sl = ev.target.closest("[data-wsell]"); if (sl) { walletSell(sl.dataset.wsell, sl.dataset.pct); return; }
   });
 
   /* positions */
@@ -423,11 +427,122 @@
   $("rules").addEventListener("click", (ev) => { const b = ev.target.closest("[data-step]"); if (!b) return; const key = b.dataset.step; const cur = Number(state.rules[key]); setRule(key, cur + Number(b.dataset.d) * stepSize[key]); });
   $("rules").addEventListener("change", (ev) => { const i = ev.target.closest("[data-rule]"); if (i) setRule(i.dataset.rule, Number(i.value)); });
 
+  /* wallet: the page asks bodkin what to send, the wallet decides whether to sign it.
+     bodkin builds the calldata and never holds a key on this path; every step is shown by the wallet. */
+  const CHAIN_HEX = "0x1237"; // 4663
+  const CHAIN_PARAMS = {
+    chainId: CHAIN_HEX, chainName: "Robinhood Chain",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrls: ["https://rpc.mainnet.chain.robinhood.com"],
+    blockExplorerUrls: ["https://robinhoodchain.blockscout.com"],
+  };
+  const providers = new Map();
+  window.addEventListener("eip6963:announceProvider", (ev) => providers.set(ev.detail.info.uuid, ev.detail));
+  window.dispatchEvent(new Event("eip6963:requestProvider"));
+
+  function pickProvider() {
+    if (providers.size) return [...providers.values()][0];
+    if (window.ethereum) return { info: { name: "injected wallet" }, provider: window.ethereum };
+    return null;
+  }
+  function renderWalletBtn() {
+    const b = $("wallet-btn");
+    b.hidden = !state.wallet.enabled;
+    b.textContent = state.wallet.account ? short(state.wallet.account) : "connect wallet";
+    b.classList.toggle("ghost", !state.wallet.account);
+  }
+  async function ensureChain(p) {
+    try {
+      await p.request({ method: "wallet_switchEthereumChain", params: [{ chainId: CHAIN_HEX }] });
+    } catch (e) {
+      // 4902: the wallet does not know this chain yet. Phantom ships it; others may need adding.
+      if (e && (e.code === 4902 || e.code === -32603)) await p.request({ method: "wallet_addEthereumChain", params: [CHAIN_PARAMS] });
+      else throw e;
+    }
+  }
+  async function connectWallet() {
+    const found = pickProvider();
+    if (!found) { toast("no browser wallet found; install one that supports Robinhood Chain"); return; }
+    try {
+      const p = found.provider;
+      const accounts = await p.request({ method: "eth_requestAccounts" });
+      if (!accounts || !accounts.length) throw new Error("no account returned");
+      await ensureChain(p);
+      state.wallet.provider = p;
+      state.wallet.account = accounts[0];
+      p.on && p.on("accountsChanged", (a) => { state.wallet.account = a && a[0] ? a[0] : null; renderWalletBtn(); if (state.sel) openDrawer(state.sel); });
+      renderWalletBtn();
+      toast(`wallet connected: ${short(accounts[0])} on ${found.info.name}`);
+      if (state.sel) openDrawer(state.sel);
+    } catch (e) {
+      toast("wallet: " + (e.message || "refused"));
+    }
+  }
+  $("wallet-btn").onclick = connectWallet;
+
+  /** The trade controls in the drawer. Nothing here can spend on its own: it asks the wallet, which asks you. */
+  function walletPanel(token) {
+    if (!state.wallet.enabled) return "";
+    if (!state.wallet.account) return `<div class="why" style="margin-top:14px">connect a wallet to buy or sell this yourself · the sniper is separate and still needs its own key</div>`;
+    const cap = state.wallet.maxBuyEth;
+    return `<div class="why" style="margin-top:14px">
+      <div style="margin-bottom:8px">your wallet ${short(state.wallet.account)} · cap ${cap} ETH per buy</div>
+      <div class="tools" style="gap:6px;flex-wrap:wrap">
+        <input id="w-eth" type="number" step="0.001" min="0" max="${cap}" value="${Math.min(0.005, cap)}" style="width:90px" />
+        <button class="btn sm" data-wbuy="${token}">buy</button>
+        <button class="btn sm ghost" data-wsell="${token}" data-pct="100">sell all</button>
+        <button class="btn sm ghost" data-wsell="${token}" data-pct="50">sell half</button>
+      </div>
+      <div id="w-status" class="muted" style="margin-top:8px"></div>
+    </div>`;
+  }
+  const wstatus = (s) => { const el = $("w-status"); if (el) el.textContent = s; };
+
+  /** Send a plan's steps in order, waiting for the person to sign each one. */
+  async function sendPlan(plan) {
+    const p = state.wallet.provider;
+    if (!p) { toast("connect a wallet first"); return; }
+    if (plan.from.toLowerCase() !== state.wallet.account.toLowerCase()) { toast("the plan was built for a different account"); return; }
+    await ensureChain(p);
+    let i = 0;
+    for (const s of plan.steps) {
+      i++;
+      wstatus(`${i}/${plan.steps.length} ${s.label} — confirm in your wallet`);
+      try {
+        const hash = await p.request({ method: "eth_sendTransaction", params: [{ from: plan.from, to: s.to, data: s.data, value: s.value }] });
+        wstatus(`${i}/${plan.steps.length} ${s.label} — sent ${String(hash).slice(0, 12)}…`);
+      } catch (e) {
+        wstatus(`stopped at step ${i}: ${e.message || "refused in the wallet"}`);
+        toast("wallet refused or failed at: " + s.label);
+        return;
+      }
+    }
+    wstatus(`done — ${plan.steps.length} transaction${plan.steps.length === 1 ? "" : "s"} sent`);
+    toast("sent; watch your wallet or the explorer for confirmation");
+  }
+
+  async function walletBuy(token) {
+    const eth = Number(($("w-eth") || {}).value);
+    wstatus("building the buy…");
+    const plan = await post("/api/tx/buy", { from: state.wallet.account, token, eth });
+    if (!plan) return;
+    wstatus(`${plan.quote.inLabel} → ${plan.quote.outLabel} on the ${plan.venue} (min ${plan.quote.minOutLabel})`);
+    await sendPlan(plan);
+  }
+  async function walletSell(token, pct) {
+    wstatus("building the sell…");
+    const plan = await post("/api/tx/sell", { from: state.wallet.account, token, pct: Number(pct) });
+    if (!plan) return;
+    wstatus(`${plan.quote.inLabel} → ${plan.quote.outLabel} on the ${plan.venue}${plan.steps.length > 1 ? ` · ${plan.steps.length} steps, approvals first` : ""}`);
+    await sendPlan(plan);
+  }
+
   /* events */
   function onEvent(e) {
     if (e.kind === "hello") {
       state.live = e.live; state.paused = !!e.paused; state.startedAt = e.startedAt; state.seen = e.seen || 0; state.fired = e.fired || 0; state.rules = e.rules;
       state.refs = e.refs || {}; state.health = e.health || null; state.lastTick = Date.now(); state.connected = true; renderRefs();
+      if (e.wallet) { state.wallet.enabled = !!e.wallet.enabled; state.wallet.chainId = e.wallet.chainId; state.wallet.maxBuyEth = e.wallet.maxBuyEth; renderWalletBtn(); }
       for (const p of e.positions || []) state.pos.set(p.id, { symbol: p.symbol, ethIn: p.ethIn, pnl: p.pnl, status: p.status, venue: "curve", reason: p.reason, closedAt: p.closedAt });
       renderMode(); renderRules();
     } else if (e.kind === "tick") { state.lastTick = Date.now(); state.health = e.health || null; if (state.paused !== !!e.paused) { state.paused = !!e.paused; renderMode(); } }
