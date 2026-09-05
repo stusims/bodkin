@@ -1,0 +1,24 @@
+# Normalize text to LF in the repository; check out native on each platform.
+* text=auto
+
+# Windows launchers are stored with CRLF and double-clicked on Windows.
+# -text keeps their bytes exactly as they are, so they never renormalize.
+*.cmd -text
+
+# README.md is stored with CRLF upstream and is edited there often. Leaving
+# it unconverted keeps our blob byte-identical to upstream's, so rebasing on
+# upstream/main never hits a whole-file line-ending conflict.
+README.md -text
+
+# Always LF, whatever the platform: shebang scripts and shell scripts break
+# with CRLF, and these are read by Node and by POSIX shells.
+bin/* text eol=lf
+*.sh  text eol=lf
+
+# Binary — never convert, never diff as text.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff  binary
+*.woff2 binary
