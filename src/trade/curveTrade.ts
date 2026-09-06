@@ -3,6 +3,7 @@ import { curveAbi, tokenAbi } from "../abi/pons.js";
 import { ZERO, fastClient, publicClient } from "../chain.js";
 import { minOutFromRate, quoteBuy, quoteSell, readCurveState, type CurveState } from "../pons/curve.js";
 import { buildCurveBuy, buildCurveSell, buildErc20Approve, type TxCall } from "./calls.js";
+import { fillDeltaPct, logTrade } from "./tradeLog.js";
 import { requireAccount, walletClient } from "./wallet.js";
 
 /** The one place a built call is signed and broadcast. Everything above it only encodes. */
@@ -29,7 +30,9 @@ export async function buyOnCurve(curve: Address, ethIn: bigint, slippageBps: num
   const rc = await publicClient.waitForTransactionReceipt({ hash });
   if (rc.status !== "success") throw new Error(`buy reverted: ${hash}`);
   const buys = parseEventLogs({ abi: curveAbi, logs: rc.logs, eventName: "CurveBuy" });
-  return { ...base, tokensOut: buys.reduce((a, b) => a + b.args.tokensOut, 0n), hash, gasUsed: rc.gasUsed };
+  const tokensOut = buys.reduce((a, b) => a + b.args.tokensOut, 0n);
+  logTrade({ at: Math.floor(Date.now() / 1000), action: "buy", venue: "curve", hash, ethIn: ethIn.toString(), tokensQuoted: q.tokensOut.toString(), minOut: minOut.toString(), tokensOut: tokensOut.toString(), gasUsed: rc.gasUsed.toString(), fillDeltaPct: fillDeltaPct(q.tokensOut, tokensOut) });
+  return { ...base, tokensOut, hash, gasUsed: rc.gasUsed };
 }
 
 export async function ensureAllowance(token: Address, spender: Address, amount: bigint): Promise<Hex | null> {
@@ -38,6 +41,7 @@ export async function ensureAllowance(token: Address, spender: Address, amount: 
   if (current >= amount) return null;
   const hash = await sendCall(buildErc20Approve(token, spender));
   await publicClient.waitForTransactionReceipt({ hash });
+  logTrade({ at: Math.floor(Date.now() / 1000), action: "approve", venue: "curve", token, hash });
   return hash;
 }
 
@@ -53,5 +57,7 @@ export async function sellOnCurve(curve: Address, token: Address, tokensIn: bigi
   const rc = await publicClient.waitForTransactionReceipt({ hash });
   if (rc.status !== "success") throw new Error(`sell reverted: ${hash}`);
   const sells = parseEventLogs({ abi: curveAbi, logs: rc.logs, eventName: "CurveSell" });
-  return { ...base, ethOut: sells.reduce((a, b) => a + b.args.quoteOut, 0n), hash, gasUsed: rc.gasUsed };
+  const ethOut = sells.reduce((a, b) => a + b.args.quoteOut, 0n);
+  logTrade({ at: Math.floor(Date.now() / 1000), action: "sell", venue: "curve", token, hash, tokensIn: tokensIn.toString(), ethQuoted: ethQuoted.toString(), minOut: minOut.toString(), ethOut: ethOut.toString(), gasUsed: rc.gasUsed.toString(), fillDeltaPct: fillDeltaPct(ethQuoted, ethOut) });
+  return { ...base, ethOut, hash, gasUsed: rc.gasUsed };
 }

@@ -123,9 +123,10 @@ npm run hunt                  # live launch feed, no key needed
 npm run board                 # http://127.0.0.1:4663, dry run
 ```
 
-There is no linter and no CI in this repo: `npm run typecheck` and `npm test`
-are the whole gate, so both must be clean locally. Nothing else will catch a
-regression.
+There is no linter: `npm run typecheck` and `npm test` are the whole gate.
+`.github/workflows/ci.yml` runs both, plus the build, on every push and pull
+request — but keep them clean locally too, because nothing else will catch a
+regression before you push.
 
 ## Hard invariants
 
